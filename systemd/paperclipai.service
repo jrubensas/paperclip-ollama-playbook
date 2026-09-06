@@ -1,0 +1,26 @@
+[Unit]
+Description=Paperclip AI (default)
+After=network.target ollama-preload.service
+Wants=ollama-preload.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart="/home/user/.local/bin/paperclipai" run --instance "default"
+Environment="PAPERCLIP_SERVICE_MANAGED=1"
+Environment="PAPERCLIP_INSTANCE_ID=default"
+Environment="PAPERCLIP_HOME=/home/user/.paperclip"
+Environment="PATH=/home/user/.local/bin:/home/user/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="OPENCODE_ALLOW_ALL_MODELS=true"
+Environment="PAPERCLIP_OPENCODE_SMALL_MODEL=ollama/qwen2.5-coder:32b"
+Environment="PAPERCLIP_TEAMS_CATALOG_DIR=/run/media/user/Storage/paperclip/packages/teams-catalog"
+Environment='PAPERCLIP_ADAPTER_MODELS={"opencode_local":[{"id":"ollama/qwen2.5-coder:32b","label":"Ollama - Qwen 2.5 Coder 32B (Original)"}]}'
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+
+[Install]
+WantedBy=default.target

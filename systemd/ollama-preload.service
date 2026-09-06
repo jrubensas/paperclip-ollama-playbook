@@ -1,0 +1,12 @@
+[Unit]
+Description=Preload Ollama Models into Dual GPUs
+After=ollama.service
+Requires=ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/user/.local/bin/ollama-preload.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

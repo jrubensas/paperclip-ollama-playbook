@@ -45,9 +45,10 @@ Abaixo está o detalhamento de cada variável aplicada na unidade systemd:
 | `CUDA_DEVICE_ORDER` | `PCI_BUS_ID` | Mantém a ordem física determinística dos barramentos PCIe. |
 | `OLLAMA_VULKAN` | `0` | Desativa o backend Vulkan em favor do backend CUDA nativo, muito mais otimizado para tensores NVIDIA. |
 | `GGML_VK_VISIBLE_DEVICES`| `""` (vazio) | Previne inicialização acidental de instâncias de aceleração Vulkan. |
-| `OLLAMA_CONTEXT_LENGTH` | `32768` | Define a janela de contexto em 32k tokens, essencial para que os agentes consigam ler códigos e documentações inteiras. |
+| `OLLAMA_CONTEXT_LENGTH` | `16384` | Define a janela de contexto em 16k tokens por slot, otimizando o orçamento de VRAM para concorrência. |
 | `OLLAMA_MAX_LOADED_MODELS` | `1` | Proíbe que múltiplos modelos coexistam na VRAM, evitando despejo do modelo principal ou estouro de memória. |
-| `OLLAMA_NUM_PARALLEL` | `1` | Garante a integridade da alocação de KV Cache (ver Capítulo 01). |
+| `OLLAMA_NUM_PARALLEL` | `3` | Permite que até 3 agentes autônomos realizem inferência concorrente em slots paralelos independentes. |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Quantiza o KV Cache em 8-bits, reduzindo o consumo de memória de atenção pela metade sem perda perceptível de precisão. |
 | `OLLAMA_FLASH_ATTENTION`| `1` | Ativa algoritmos de atenção particionada em blocos na GPU, reduzindo o consumo de memória do KV Cache em até ~40% e acelerando a inferência. |
 | `OLLAMA_KEEP_ALIVE` | `24h` | Mantém o modelo permanentemente residente na VRAM, evitando o descarregamento por inatividade após 5 minutos. |
 
@@ -74,10 +75,11 @@ Environment="CUDA_VISIBLE_DEVICES=0,1"
 Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
 Environment="OLLAMA_VULKAN=0"
 Environment="GGML_VK_VISIBLE_DEVICES="
-Environment="OLLAMA_CONTEXT_LENGTH=32768"
+Environment="OLLAMA_CONTEXT_LENGTH=16384"
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
-Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_NUM_PARALLEL=3"
 Environment="OLLAMA_FLASH_ATTENTION=1"
+Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
 Environment="OLLAMA_KEEP_ALIVE=24h"
 
 [Install]

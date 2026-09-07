@@ -143,6 +143,17 @@ async function handleDone(args) {
     process.exit(1);
   }
 
+  // Guard 0: Idempotency check - if already done, exit cleanly without posting duplicate comments or churn
+  try {
+    const currentIssue = await request('GET', `/api/issues/${taskId}`);
+    if (currentIssue && currentIssue.status === 'done') {
+      console.log(`[IDEMPOTÊNCIA] A tarefa ${currentIssue.identifier || taskId} já está concluída (done). Retornando sucesso sem duplicar comentários.`);
+      return;
+    }
+  } catch (err) {
+    console.warn('Nota de verificação de idempotência:', err.message);
+  }
+
   // Guard 1: Prevent closing parent if active child subtasks exist
   if (!force) {
     try {
@@ -336,6 +347,22 @@ async function handleComment(args) {
     console.error('Error: No task ID found.');
     process.exit(1);
   }
+
+  // Guard: Anti-duplicate check - if latest comment is identical, skip posting
+  try {
+    const comments = await request('GET', `/api/issues/${taskId}/comments`);
+    if (Array.isArray(comments) && comments.length > 0) {
+      const sorted = [...comments].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      const latest = sorted[0];
+      if (latest && (latest.body || '').trim() === text) {
+        console.log(`[IDEMPOTÊNCIA] Comentário idêntico já publicado recentemente na tarefa ${taskId}. Ignorando duplicação.`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Nota ao verificar duplicação de comentários:', err.message);
+  }
+
   const res = await request('POST', `/api/issues/${taskId}/comments`, {
     body: text
   });

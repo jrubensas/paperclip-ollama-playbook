@@ -24,7 +24,9 @@ const KNOWN_AGENTS = {
   'frontend': '43272bd8-2e64-4e58-ba42-c1c44ccf1fe1',
   'firmware': 'efc00ce0-4709-4bfb-895e-fc140db6401e',
   'qa': '5f1cf674-91bc-48c8-a993-531c528c38fc',
-  'board': 'b4bf2279-b921-4149-85ab-1447b8485196'
+  'board': 'b4bf2279-b921-4149-85ab-1447b8485196',
+  'writer': '84f51613-5970-459d-af6c-abc6d0a515a6',
+  'technical_writer': '84f51613-5970-459d-af6c-abc6d0a515a6'
 };
 
 function resolveWorkspaceFilePath(filePath) {

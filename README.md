@@ -79,6 +79,7 @@ A execução de múltiplos agentes de inteligência artificial de forma autônom
 | **07** | [`07_troubleshooting_playbook.md`](docs/07_troubleshooting_playbook.md) | Guia prático de resolução de problemas, comandos de diagnóstico e desbloqueio de tarefas. |
 | **08** | [`08_board_triage_self_healing.md`](docs/08_board_triage_self_healing.md) | Circuito fechado de autorrecuperação: triagem autônoma de tarefas bloqueadas com o Agente Board. |
 | **09** | [`09_interaction_schema_and_anti_churn.md`](docs/09_interaction_schema_and_anti_churn.md) | Governança de interações, conformidade de schema Zod e proteção anti-churn / anti-looping de turnos. |
+| **10** | [`10_knowledge_and_lessons_learned.md`](docs/10_knowledge_and_lessons_learned.md) | Base de conhecimento consolidada e lições aprendidas do cluster autônomo Paperclip + Ollama. |
 
 ---
 

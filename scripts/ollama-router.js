@@ -216,8 +216,13 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // Force model to original 32B
-    parsed.model = "qwen2.5-coder:32b";
+    // Hierarchical model routing: route 7B requests to 7B model, default to 32B
+    const reqModel = (parsed.model || "").toLowerCase();
+    if (reqModel.includes("7b")) {
+      parsed.model = "qwen2.5-coder:7b";
+    } else {
+      parsed.model = "qwen2.5-coder:32b";
+    }
     if (!parsed.keep_alive) {
       parsed.keep_alive = "24h";
     }

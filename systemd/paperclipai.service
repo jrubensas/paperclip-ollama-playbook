@@ -16,7 +16,7 @@ Environment="PATH=/home/user/.local/bin:/home/user/.opencode/bin:/usr/local/bin:
 Environment="OPENCODE_ALLOW_ALL_MODELS=true"
 Environment="PAPERCLIP_OPENCODE_SMALL_MODEL=ollama/qwen2.5-coder:32b"
 Environment="PAPERCLIP_TEAMS_CATALOG_DIR=/run/media/user/Storage/paperclip/packages/teams-catalog"
-Environment='PAPERCLIP_ADAPTER_MODELS={"opencode_local":[{"id":"ollama/qwen2.5-coder:32b","label":"Ollama - Qwen 2.5 Coder 32B (Original)"}]}'
+Environment='PAPERCLIP_ADAPTER_MODELS={"opencode_local":[{"id":"ollama/qwen2.5-coder:32b","label":"Ollama - Qwen 2.5 Coder 32B (Original)"},{"id":"ollama/qwen2.5-coder:7b","label":"Ollama - Qwen 2.5 Coder 7B (Fast Executor)"}]}'
 WorkingDirectory=%h
 Restart=always
 RestartSec=5

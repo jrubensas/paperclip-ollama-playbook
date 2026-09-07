@@ -3,9 +3,10 @@
 board_triage_watcher.py
 Paperclip Autonomous Board Triage & Self-Healing Watcher
 
-Monitors Paperclip AI for blocked issues and pending interactions,
-triggering the Board Agent (Claude 3.5 Haiku) to automatically resolve
-blockers, guide agents, and unblock tasks.
+Monitors Paperclip AI for blocked issues, missing dispositions, and pending approvals.
+1. Automatically self-heals 'missing_disposition' timeouts back to 'todo' with 'local-board' authority.
+2. Automatically resolves dependency blockers once prerequisite issues are done.
+3. Wakes up the Board Agent (Claude 3.5 Haiku) for real strategic approvals and questions.
 """
 
 import urllib.request
@@ -31,31 +32,36 @@ MIN_WAKEUP_COOLDOWN_SEC = int(os.environ.get("BOARD_WAKEUP_COOLDOWN_SEC", "60"))
 
 last_wakeup_time = 0
 
-def api_get(path):
+def api_request(path, method="GET", data=None):
     url = f"{API_URL}{path}"
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        headers = {"Accept": "application/json"}
+        payload = None
+        if data is not None:
+            payload = json.dumps(data).encode('utf-8')
+            headers["Content-Type"] = "application/json"
+        
+        # NOTE: Omitting Authorization and X-Paperclip-Run-Id headers grants local-board admin authority
+        req = urllib.request.Request(url, data=payload, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=10) as res:
-            return json.loads(res.read().decode('utf-8'))
+            resp_body = res.read().decode('utf-8')
+            return json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode('utf-8', errors='ignore')
+        logger.error(f"{method} {path} failed with HTTP {e.code}: {err_msg[:200]}")
+        return None
     except Exception as e:
-        logger.debug(f"GET {path} failed: {e}")
+        logger.debug(f"{method} {path} failed: {e}")
         return None
 
+def api_get(path):
+    return api_request(path, method="GET")
+
 def api_post(path, data):
-    url = f"{API_URL}{path}"
-    try:
-        payload = json.dumps(data).encode('utf-8')
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as res:
-            return json.loads(res.read().decode('utf-8'))
-    except Exception as e:
-        logger.error(f"POST {path} failed: {e}")
-        return None
+    return api_request(path, method="POST", data=data)
+
+def api_patch(path, data):
+    return api_request(path, method="PATCH", data=data)
 
 def is_board_running():
     agent = api_get(f"/agents/{BOARD_AGENT_ID}")
@@ -75,7 +81,7 @@ def get_pending_approvals():
         return approvals
     return []
 
-def wakeup_board(reason="blocked_issue_triage", context=None):
+def wakeup_board(reason="strategic_board_decision", context=None):
     global last_wakeup_time
     now = time.time()
     if now - last_wakeup_time < MIN_WAKEUP_COOLDOWN_SEC:
@@ -101,30 +107,113 @@ def wakeup_board(reason="blocked_issue_triage", context=None):
         return True
     return False
 
+def self_heal_blocked_issues(blocked_issues):
+    """
+    Directly heals routine blocked tasks without burning LLM tokens:
+    1. missing_disposition recovery actions -> reset to 'todo'
+    2. dependency blockers where prerequisites are already done -> reset to 'todo'
+    3. broken empty/malformed test issues -> cancel or clean up
+    """
+    healed_count = 0
+    remaining_for_board = []
+
+    for issue in blocked_issues:
+        issue_id = issue.get("id")
+        ident = issue.get("identifier", issue_id)
+        title = issue.get("title", "")
+        recovery = issue.get("activeRecoveryAction") or {}
+        kind = recovery.get("kind")
+        cause = recovery.get("cause")
+
+        # 1. Self-healing for missing_disposition
+        if kind == "missing_disposition" or cause == "successful_run_missing_state":
+            logger.info(f"Self-healing {ident} ('{title[:40]}'): missing_disposition detected -> resetting to 'todo'")
+            patch_res = api_patch(f"/issues/{issue_id}", {"status": "todo"})
+            if patch_res:
+                api_post(f"/issues/{issue_id}/comments", {
+                    "body": "🤖 **Board Self-Healing Watcher**: Tarefa desbloqueada e reinserida na fila (`todo`) para continuidade da execução pelo agente responsável."
+                })
+                healed_count += 1
+                continue
+
+        # 2. Check malformed issues from early testing (e.g. DEV-52 with title '"Frontend:')
+        if title.strip().startswith('"') and len(title.strip()) < 15:
+            logger.info(f"Cleaning up malformed test issue {ident} ('{title}') -> cancelling")
+            patch_res = api_patch(f"/issues/{issue_id}", {"status": "cancelled"})
+            if patch_res:
+                api_post(f"/issues/{issue_id}/comments", {
+                    "body": "🤖 **Board Self-Healing Watcher**: Tarefa de teste com título incompleto/malformado arquivada como cancelada."
+                })
+                healed_count += 1
+                continue
+
+        # 3. Check issues blocked without recovery action (stale blockers like DEV-69)
+        blocked_by = issue.get("blockedByIssueIds") or []
+        if not blocked_by:
+            logger.info(f"Self-healing {ident} ('{title[:40]}'): stale blocked state with no blockers -> resetting to 'todo'")
+            patch_res = api_patch(f"/issues/{issue_id}", {"status": "todo"})
+            if patch_res:
+                api_post(f"/issues/{issue_id}/comments", {
+                    "body": "🤖 **Board Self-Healing Watcher**: Estado de bloqueio residual removido. Tarefa devolvida à fila (`todo`)."
+                })
+                healed_count += 1
+                continue
+
+        # 4. Check if dependencies are already satisfied
+        all_blockers_done = True
+        for blocker_id in blocked_by:
+            blocker_issue = api_get(f"/issues/{blocker_id}")
+            if not blocker_issue or blocker_issue.get("status") != "done":
+                all_blockers_done = False
+                break
+
+        if all_blockers_done and len(blocked_by) > 0:
+            logger.info(f"Self-healing {ident} ('{title[:40]}'): all {len(blocked_by)} blockers are done -> unblocking to 'todo'")
+            patch_res = api_patch(f"/issues/{issue_id}", {"status": "todo"})
+            if patch_res:
+                api_post(f"/issues/{issue_id}/comments", {
+                    "body": "🤖 **Board Self-Healing Watcher**: Todas as dependências foram concluídas. Tarefa desbloqueada e movida para `todo`."
+                })
+                healed_count += 1
+                continue
+
+        # Truly complex blocker requiring Board LLM deliberation
+        remaining_for_board.append(issue)
+
+    return healed_count, remaining_for_board
+
 def check_and_triage():
-    # 1. Check blocked issues
+    # 1. Fetch blocked issues
     blocked = get_blocked_issues()
     num_blocked = len(blocked)
-    
-    # 2. Check pending approvals
+
+    # 2. Fetch pending approvals
     approvals = get_pending_approvals()
     num_approvals = len(approvals)
 
-    if num_blocked > 0 or num_approvals > 0:
-        logger.info(f"Found {num_blocked} blocked issue(s) and {num_approvals} pending approval(s).")
-        identifiers = [i.get("identifier") for i in blocked[:5]]
-        logger.info(f"Sample blocked tasks: {', '.join(identifiers)}")
+    if num_blocked == 0 and num_approvals == 0:
+        logger.debug("System healthy: no blocked tasks and no pending approvals.")
+        return
+
+    logger.info(f"Scan found {num_blocked} blocked issue(s) and {num_approvals} pending approval(s).")
+
+    # 3. Perform autonomous direct self-healing
+    healed, remaining_blocked = self_heal_blocked_issues(blocked)
+    if healed > 0:
+        logger.info(f"Self-Healing cycle completed: {healed} issue(s) restored to 'todo' or resolved.")
+
+    # 4. If there are pending approvals or complex issues remaining, wake up the Board Agent
+    if num_approvals > 0 or len(remaining_blocked) > 0:
+        logger.info(f"Deliberation required: {len(remaining_blocked)} complex blocked issue(s), {num_approvals} pending approval(s).")
         wakeup_board(
-            reason="autonomous_triage_and_unblock",
-            context={"blocked_count": num_blocked, "approvals_count": num_approvals}
+            reason="strategic_board_deliberation",
+            context={"remaining_blocked_count": len(remaining_blocked), "approvals_count": num_approvals}
         )
-    else:
-        logger.debug("No blocked tasks or pending approvals found.")
 
 def main():
-    logger.info(f"Paperclip Board Triage Watcher started.")
+    logger.info("Paperclip Board Triage Watcher (Autonomous Self-Healing v2) started.")
     logger.info(f"API: {API_URL} | Company: {COMPANY_ID} | Board: {BOARD_AGENT_ID}")
-    logger.info(f"Interval: {CHECK_INTERVAL_SEC}s | Cooldown: {MIN_WAKEUP_COOLDOWN_SEC}s")
+    logger.info(f"Interval: {CHECK_INTERVAL_SEC}s | Wakeup Cooldown: {MIN_WAKEUP_COOLDOWN_SEC}s")
 
     while True:
         try:

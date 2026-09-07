@@ -99,7 +99,12 @@ function resolveAgentId(nameOrId) {
   for (const [k, v] of Object.entries(KNOWN_AGENTS)) {
     if (lower.includes(k)) return v;
   }
-  return nameOrId;
+  // If it's a valid GUID format
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nameOrId.trim())) {
+    return nameOrId.trim();
+  }
+  const validRoles = Object.keys(KNOWN_AGENTS).join(', ');
+  throw new Error(`[ANTI-FAUX-DONE] Agente inválido: "${nameOrId}". Não existe este agente no enxame! Os agentes válidos são: [${validRoles}]. Para tarefas de redação, contratação ou cursos, atribua a um membro técnico real (CTO, Firmware, QA) ou execute diretamente.`);
 }
 
 async function findCurrentOrActiveTask(explicitTaskId) {
@@ -121,9 +126,12 @@ async function findCurrentOrActiveTask(explicitTaskId) {
 async function handleDone(args) {
   let taskId = null;
   let commentParts = [];
+  let force = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--task-id' && args[i + 1]) {
       taskId = args[++i];
+    } else if (args[i] === '--force') {
+      force = true;
     } else {
       commentParts.push(args[i]);
     }
@@ -134,6 +142,43 @@ async function handleDone(args) {
     console.error('Error: No task ID specified and no active task found in environment.');
     process.exit(1);
   }
+
+  // Guard 1: Prevent closing parent if active child subtasks exist
+  if (!force) {
+    try {
+      const childIssues = await request('GET', `/api/companies/${COMPANY_ID}/issues?parentId=${taskId}`);
+      if (Array.isArray(childIssues) && childIssues.length > 0) {
+        const activeChildren = childIssues.filter(c => c.status === 'todo' || c.status === 'in_progress' || c.status === 'in_review');
+        if (activeChildren.length > 0) {
+          const childIds = activeChildren.map(c => `${c.identifier || c.id} (${c.status})`).join(', ');
+          console.error(`[ANTI-FAUX-DONE] BLOQUEIO DE CONCLUSÃO PREMATURA:`);
+          console.error(`A tarefa pai ${taskId} possui ${activeChildren.length} subtarefa(s) ainda ativa(s): [${childIds}].`);
+          console.error(`A regra de governança proíbe concluir o pai apenas por ter delegado! Os filhos devem ser concluídos primeiro.`);
+          console.error(`(Se for realmente necessário fechar forçadamente, use: paperclip-helper done --force)`);
+          process.exit(1);
+        }
+      }
+    } catch (e) {
+      console.warn('Nota ao verificar subtarefas:', e.message);
+    }
+  }
+
+  // Guard 2: Reject error or chatbot placeholder comments
+  const lowerComment = comment.toLowerCase();
+  const forbiddenPatterns = [
+    'task in progress', 'starting work', 'unknown command', 'build error',
+    'please provide', 'what would you like', 'do you want to', 'tool call was rejected',
+    'tool is not available', 'file not found', 'failed'
+  ];
+  for (const pat of forbiddenPatterns) {
+    if (lowerComment.includes(pat)) {
+      console.error(`[ANTI-FAUX-DONE] BLOQUEIO DE FALSA CONCLUSÃO:`);
+      console.error(`O comentário contém indicativo de tarefa incompleta, dúvida reflexiva ou erro ("${pat}").`);
+      console.error(`A tarefa NÃO foi concluída. Resolva o problema antes de dar done.`);
+      process.exit(1);
+    }
+  }
+
   console.log(`Marking task ${taskId} as done...`);
   const res = await request('PATCH', `/api/issues/${taskId}`, {
     status: 'done',

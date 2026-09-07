@@ -74,3 +74,7 @@ O Paperclip proíbe que um agente coloque uma tarefa em `in_review` se não houv
 3. **Triagem Autônoma em Duas Camadas (Self-Healing Watcher v2)**:
    - **Camada 1 (Direta/Local)**: O daemon `paperclip-board-triage.service` roda a cada 15s e resolve instantaneamente timeouts de disposição (`missing_disposition`) e dependências satisfeitas, restaurando-as para `todo` como `local-board` sem acionar LLMs ou gastar tokens.
    - **Camada 2 (Deliberação do Board)**: Tarefas com aprovações pendentes ou interações formais são escaladas para o Claude 3.5 Haiku, que atua como arquiteto/diretor emitindo pareceres e decisões vinculadas.
+4. **Guardrails Anti-Faux-Done (Prevenção de Falsas Conclusões e Delegações Fantasma)**:
+   - **Validação Estrita de Destinatários (`resolveAgentId`)**: O CLI impede a atribuição de tarefas a papéis alucinados pelo modelo (ex: "HR", "Marketing"). Se o agente não existir na empresa, a chamada é rejeitada imediatamente com código de erro.
+   - **Invariante de Subtarefas**: O `paperclip-helper done` rejeita a conclusão de uma tarefa pai se houver subtarefas filhas em aberto (`todo`, `in_progress`, `in_review`). Delegar não é concluir.
+   - **Bloqueio de Comentários de Falsa Conclusão**: Comentários contendo pedidos de ajuda reflexivos ("please provide", "what would you like", "task in progress", "build error") bloqueiam a chamada a `done`, impedindo que falhas em turnos paralelos fechem tickets prematuramente.

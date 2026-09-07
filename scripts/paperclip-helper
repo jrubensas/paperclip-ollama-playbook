@@ -303,27 +303,52 @@ async function handleAskBoard(args) {
   let questionParts = [];
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--task-id' && args[i + 1]) {
+    const arg = args[i];
+    if (arg === '--task-id' && args[i + 1]) {
       taskId = args[++i];
-    } else if (args[i] === '--title' && args[i + 1]) {
+    } else if (arg === '--title' && args[i + 1]) {
       title = args[++i];
-    } else if (args[i] === '--question' && args[i + 1]) {
+    } else if (arg === '--question' && args[i + 1]) {
       questionParts.push(args[++i]);
-    } else {
-      questionParts.push(args[i]);
+    } else if (arg === '--prompt' && args[i + 1]) {
+      if (questionParts.length === 0) questionParts.push(args[++i]);
+      else i++;
+    } else if (arg === '--selectionMode' || arg === '--options') {
+      if (args[i + 1] && !args[i + 1].startsWith('--')) i++;
+    } else if (!arg.startsWith('--')) {
+      questionParts.push(arg);
     }
   }
 
-  const question = questionParts.join(' ').trim();
+  let rawQuestion = questionParts.join(' ').trim();
+  // Strip any accidental trailing flags that might have leaked into question text
+  let question = rawQuestion
+    .replace(/--(prompt|selectionMode|options)\b[\s\S]*/gi, '')
+    .trim();
+
   if (!question) {
-    console.error('Error: --question "..." é obrigatório.');
-    process.exit(1);
+    question = rawQuestion || 'Solicitação de alinhamento e deliberação da diretoria.';
   }
 
   taskId = await findCurrentOrActiveTask(taskId);
   if (!taskId) {
     console.error('Error: No task ID specified and no active task found in environment.');
     process.exit(1);
+  }
+
+  // Idempotency check: inspect current issue
+  try {
+    const issue = await request('GET', `/api/issues/${taskId}`);
+    if (issue.status === 'done') {
+      console.log(`Task ${issue.identifier || taskId} is already marked DONE. Nothing to escalate.`);
+      return;
+    }
+    if (issue.status === 'in_review') {
+      console.log(`Task ${issue.identifier || taskId} is already IN_REVIEW awaiting Board resolution. Skipping duplicate escalation.`);
+      return;
+    }
+  } catch (err) {
+    console.warn(`Note: Could not inspect task ${taskId} prior to escalation:`, err.message);
   }
 
   console.log(`Submitting question to Board for task ${taskId}...`);
@@ -337,22 +362,28 @@ async function handleAskBoard(args) {
     console.warn('Warning posting comment:', err.message);
   }
 
-  // 2. Create interaction ask_user_questions
-  const idempotencyKey = `question:${taskId}:${Date.now()}`;
+  // 2. Create interaction ask_user_questions conforming to Paperclip schema
+  const idempotencyKey = `ask-board:${taskId}:${Date.now()}`;
   try {
     await request('POST', `/api/issues/${taskId}/interactions`, {
       kind: 'ask_user_questions',
       idempotencyKey,
-      title,
+      title: title.slice(0, 240),
       summary: question.slice(0, 150),
       continuationPolicy: 'wake_assignee',
       payload: {
         version: 1,
+        supersedeOnUserComment: false,
         questions: [
           {
             id: 'q1',
-            question: question,
-            type: 'text'
+            prompt: question.slice(0, 500),
+            selectionMode: 'single',
+            options: [
+              { id: 'opt_proceed', label: 'Aprovar / Proceder com as diretrizes' },
+              { id: 'opt_clarify', label: 'Solicitar Esclarecimento / Ajuste', freeText: true },
+              { id: 'opt_reject', label: 'Rejeitar / Abordagem Inviável' }
+            ]
           }
         ]
       }
@@ -364,10 +395,14 @@ async function handleAskBoard(args) {
 
   // 3. Move issue to in_review (valid waiting disposition)
   console.log(`Moving task ${taskId} to in_review...`);
-  await request('PATCH', `/api/issues/${taskId}`, {
-    status: 'in_review',
-    comment: `Aguardando deliberação/resposta do Board: ${question}`
-  });
+  try {
+    await request('PATCH', `/api/issues/${taskId}`, {
+      status: 'in_review'
+    });
+    console.log(`Task ${taskId} is now in_review.`);
+  } catch (patchErr) {
+    console.warn(`Warning updating issue status to in_review: ${patchErr.message}`);
+  }
 
   // 4. Wakeup the Board agent
   const boardId = KNOWN_AGENTS['board'];
@@ -403,10 +438,39 @@ async function handleReview(args) {
     console.error('Error: No task ID specified and no active task found in environment.');
     process.exit(1);
   }
+
+  // Check if issue is already in_review or done
+  try {
+    const issue = await request('GET', `/api/issues/${taskId}`);
+    if (issue.status === 'done' || issue.status === 'in_review') {
+      console.log(`Task ${issue.identifier || taskId} is already ${issue.status}.`);
+      return;
+    }
+  } catch {}
+
+  // Ensure there is a review path so Paperclip does not reject with 422 invalid_issue_disposition
+  const idempotencyKey = `review:${taskId}:${Date.now()}`;
+  try {
+    await request('POST', `/api/issues/${taskId}/interactions`, {
+      kind: 'request_confirmation',
+      idempotencyKey,
+      title: 'Revisão de Entrega / QA',
+      summary: comment.slice(0, 150),
+      continuationPolicy: 'wake_assignee',
+      payload: {
+        version: 1,
+        prompt: `Validar entrega da tarefa: ${comment}`.slice(0, 500),
+        acceptLabel: 'Aprovar Entrega',
+        rejectLabel: 'Rejeitar / Solicitar Correção'
+      }
+    });
+  } catch (err) {
+    console.warn('Warning creating review interaction:', err.message);
+  }
+
   console.log(`Moving task ${taskId} to in_review...`);
   const res = await request('PATCH', `/api/issues/${taskId}`, {
-    status: 'in_review',
-    comment: comment
+    status: 'in_review'
   });
   console.log(`Success: Task ${res.identifier || taskId} is now in_review.`);
 }

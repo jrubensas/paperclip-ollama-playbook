@@ -1,0 +1,17 @@
+[Unit]
+Description=Paperclip Autonomous Board Triage & Self-Healing Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/user/.local/bin/board_triage_watcher.py
+Restart=always
+RestartSec=10
+Environment=PAPERCLIP_API_URL=http://127.0.0.1:3100/api
+Environment=PAPERCLIP_COMPANY_ID=a2b7cc05-fefb-4a38-bdf4-1989be1b97fd
+Environment=PAPERCLIP_BOARD_ID=b4bf2279-b921-4149-85ab-1447b8485196
+Environment=BOARD_CHECK_INTERVAL_SEC=15
+Environment=BOARD_WAKEUP_COOLDOWN_SEC=60
+
+[Install]
+WantedBy=default.target

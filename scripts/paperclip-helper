@@ -1,0 +1,479 @@
+#!/home/user/.local/bin/node
+/**
+ * paperclip-helper: CLI utility for Paperclip AI agents
+ * Enables easy interaction with Paperclip API from OpenCode bash tool.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const { execFileSync } = require('child_process');
+
+const API_URL = process.env.PAPERCLIP_API_URL || 'http://127.0.0.1:3100';
+const API_KEY = process.env.PAPERCLIP_API_KEY || '';
+const COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID || 'a2b7cc05-fefb-4a38-bdf4-1989be1b97fd';
+const PROJECT_ID = process.env.PAPERCLIP_PROJECT_ID || '94af9ecd-eb4a-49a4-8bb9-dd657ce74932';
+const GOAL_ID = process.env.PAPERCLIP_GOAL_ID || '109b2150-544a-456b-b49c-c56164a13f06';
+const DEFAULT_WORKSPACE = '/run/media/user/Storage/paperclip-data/instances/default/projects/a2b7cc05-fefb-4a38-bdf4-1989be1b97fd/94af9ecd-eb4a-49a4-8bb9-dd657ce74932/_default';
+const RUN_ID = process.env.PAPERCLIP_RUN_ID || '';
+let TASK_ID = process.env.PAPERCLIP_TASK_ID || '';
+
+const KNOWN_AGENTS = {
+  'ceo': '53a70b86-e1d9-4360-b783-d6891cae086e',
+  'cto': '03fd3b00-89a1-458f-834d-fdcb4a513fb8',
+  'frontend': '43272bd8-2e64-4e58-ba42-c1c44ccf1fe1',
+  'firmware': 'efc00ce0-4709-4bfb-895e-fc140db6401e',
+  'qa': '5f1cf674-91bc-48c8-a993-531c528c38fc',
+  'board': 'b4bf2279-b921-4149-85ab-1447b8485196'
+};
+
+function resolveWorkspaceFilePath(filePath) {
+  if (path.isAbsolute(filePath)) {
+    if (fs.existsSync(filePath)) return filePath;
+    const trimmed = filePath.replace(/^\/+/, '');
+    const wsPath = path.resolve(DEFAULT_WORKSPACE, trimmed);
+    if (fs.existsSync(wsPath)) return wsPath;
+    return filePath;
+  }
+  const inCwd = path.resolve(process.cwd(), filePath);
+  if (fs.existsSync(inCwd) && process.cwd() !== '/home/user') {
+    return inCwd;
+  }
+  const inWorkspace = path.resolve(DEFAULT_WORKSPACE, filePath);
+  if (fs.existsSync(inWorkspace)) {
+    return inWorkspace;
+  }
+  return inCwd;
+}
+
+function request(method, apiPath, body = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(apiPath, API_URL);
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (API_KEY) {
+      headers['Authorization'] = `Bearer ${API_KEY}`;
+    }
+    if (RUN_ID) {
+      headers['X-Paperclip-Run-Id'] = RUN_ID;
+    }
+
+    const payload = body ? JSON.stringify(body) : null;
+    if (payload) {
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+
+    const req = http.request(url, {
+      method,
+      headers
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString();
+        let data = null;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          data = raw;
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(data);
+        } else {
+          reject(new Error(`API Error ${res.statusCode}: ${typeof data === 'object' ? JSON.stringify(data) : data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function resolveAgentId(nameOrId) {
+  if (!nameOrId) return null;
+  const lower = nameOrId.toLowerCase().trim();
+  if (KNOWN_AGENTS[lower]) return KNOWN_AGENTS[lower];
+  for (const [k, v] of Object.entries(KNOWN_AGENTS)) {
+    if (lower.includes(k)) return v;
+  }
+  return nameOrId;
+}
+
+async function findCurrentOrActiveTask(explicitTaskId) {
+  if (explicitTaskId) return explicitTaskId;
+  if (TASK_ID) return TASK_ID;
+  const agentId = process.env.PAPERCLIP_AGENT_ID;
+  if (!agentId) return null;
+  try {
+    const issues = await request('GET', `/api/companies/${COMPANY_ID}/issues?assigneeAgentId=${agentId}&status=in_progress,todo`);
+    if (Array.isArray(issues) && issues.length > 0) {
+      const inProg = issues.find(i => i.status === 'in_progress');
+      if (inProg) return inProg.id;
+      return issues[0].id;
+    }
+  } catch {}
+  return null;
+}
+
+async function handleDone(args) {
+  let taskId = null;
+  let commentParts = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else {
+      commentParts.push(args[i]);
+    }
+  }
+  let comment = commentParts.join(' ').trim() || 'Task completed successfully.';
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID specified and no active task found in environment.');
+    process.exit(1);
+  }
+  console.log(`Marking task ${taskId} as done...`);
+  const res = await request('PATCH', `/api/issues/${taskId}`, {
+    status: 'done',
+    comment: comment
+  });
+  console.log(`Success: Task ${res.identifier || taskId} is now marked DONE.`);
+}
+
+async function handleDocument(args) {
+  let taskId = null;
+  let cleanArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else {
+      cleanArgs.push(args[i]);
+    }
+  }
+  if (cleanArgs.length < 3) {
+    console.error('Usage: paperclip-helper document [--task-id <id>] <key> <title> <filePath>');
+    process.exit(1);
+  }
+  const [key, title, filePath] = cleanArgs;
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID found.');
+    process.exit(1);
+  }
+  const resolvedPath = resolveWorkspaceFilePath(filePath);
+  if (!fs.existsSync(resolvedPath)) {
+    console.error(`Error: File not found at ${resolvedPath}`);
+    process.exit(1);
+  }
+  const content = fs.readFileSync(resolvedPath, 'utf8');
+  console.log(`Publishing document "${title}" (key: ${key}) to task ${taskId}...`);
+  const res = await request('PUT', `/api/issues/${taskId}/documents/${key}`, {
+    title,
+    format: 'markdown',
+    body: content,
+    changeSummary: `Uploaded from ${path.basename(resolvedPath)}`
+  });
+  console.log(`Success: Document "${title}" published to task ${taskId}.`);
+}
+
+async function handleArtifact(args) {
+  let taskId = null;
+  let cleanArgs = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else {
+      cleanArgs.push(args[i]);
+    }
+  }
+  if (cleanArgs.length < 1) {
+    console.error('Usage: paperclip-helper artifact [--task-id <id>] <filePath> [title]');
+    process.exit(1);
+  }
+  const filePath = cleanArgs[0];
+  const title = cleanArgs[1] || path.basename(filePath);
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID found.');
+    process.exit(1);
+  }
+  const resolvedPath = resolveWorkspaceFilePath(filePath);
+  if (!fs.existsSync(resolvedPath)) {
+    console.error(`Error: File not found at ${resolvedPath}`);
+    process.exit(1);
+  }
+
+  console.log(`Uploading file attachment for artifact "${title}"...`);
+  const uploadOutput = execFileSync('/home/user/.local/bin/paperclipai', [
+    'issue', 'attachment:upload', taskId,
+    '--file', resolvedPath,
+    '-C', COMPANY_ID
+  ], { encoding: 'utf8' });
+
+  let attachment = JSON.parse(uploadOutput);
+  console.log(`Registering artifact work-product "${title}"...`);
+  const res = await request('POST', `/api/issues/${taskId}/work-products`, {
+    type: 'artifact',
+    provider: 'paperclip',
+    title,
+    status: 'ready_for_review',
+    metadata: {
+      attachmentId: attachment.id
+    }
+  });
+  console.log(`Success: Artifact "${title}" published and registered for task ${taskId}.`);
+}
+
+async function handleCreateTask(args) {
+  let title = '';
+  let assignee = '';
+  let description = '';
+  let priority = 'medium';
+  let parentId = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--title' && args[i + 1]) {
+      title = args[++i];
+    } else if (args[i] === '--assignee' && args[i + 1]) {
+      assignee = args[++i];
+    } else if (args[i] === '--description' && args[i + 1]) {
+      description = args[++i];
+    } else if (args[i] === '--priority' && args[i + 1]) {
+      priority = args[++i];
+    } else if (args[i] === '--parent-id' && args[i + 1]) {
+      parentId = args[++i];
+    }
+  }
+
+  if (!title) {
+    console.error('Error: --title is required.');
+    process.exit(1);
+  }
+
+  const assigneeId = resolveAgentId(assignee);
+  if (!parentId) {
+    parentId = await findCurrentOrActiveTask();
+  }
+
+  console.log(`Creating task "${title}" assigned to ${assignee} (${assigneeId || 'unassigned'})...`);
+  const res = await request('POST', `/api/companies/${COMPANY_ID}/issues`, {
+    title,
+    description: description || title,
+    assigneeAgentId: assigneeId,
+    status: 'todo',
+    priority,
+    parentId: parentId || null,
+    projectId: PROJECT_ID,
+    goalId: GOAL_ID
+  });
+  console.log(`Success: Created task ${res.identifier || res.id}: "${res.title}".`);
+}
+
+async function handleComment(args) {
+  let taskId = null;
+  let commentParts = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else {
+      commentParts.push(args[i]);
+    }
+  }
+  const text = commentParts.join(' ').trim();
+  if (!text) {
+    console.error('Error: Comment text is required.');
+    process.exit(1);
+  }
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID found.');
+    process.exit(1);
+  }
+  const res = await request('POST', `/api/issues/${taskId}/comments`, {
+    body: text
+  });
+  console.log(`Success: Comment posted to task ${taskId}.`);
+}
+
+async function handleAskBoard(args) {
+  let taskId = null;
+  let title = 'Dúvida/Bloqueio para o Board';
+  let questionParts = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else if (args[i] === '--title' && args[i + 1]) {
+      title = args[++i];
+    } else if (args[i] === '--question' && args[i + 1]) {
+      questionParts.push(args[++i]);
+    } else {
+      questionParts.push(args[i]);
+    }
+  }
+
+  const question = questionParts.join(' ').trim();
+  if (!question) {
+    console.error('Error: --question "..." é obrigatório.');
+    process.exit(1);
+  }
+
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID specified and no active task found in environment.');
+    process.exit(1);
+  }
+
+  console.log(`Submitting question to Board for task ${taskId}...`);
+
+  // 1. Post comment mentioning @Board
+  try {
+    await request('POST', `/api/issues/${taskId}/comments`, {
+      body: `@Board Consulta de Governança/Bloqueio Técnico:\n${question}`
+    });
+  } catch (err) {
+    console.warn('Warning posting comment:', err.message);
+  }
+
+  // 2. Create interaction ask_user_questions
+  const idempotencyKey = `question:${taskId}:${Date.now()}`;
+  try {
+    await request('POST', `/api/issues/${taskId}/interactions`, {
+      kind: 'ask_user_questions',
+      idempotencyKey,
+      title,
+      summary: question.slice(0, 150),
+      continuationPolicy: 'wake_assignee',
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: 'q1',
+            question: question,
+            type: 'text'
+          }
+        ]
+      }
+    });
+    console.log(`Interaction created for task ${taskId}.`);
+  } catch (err) {
+    console.warn('Warning creating interaction:', err.message);
+  }
+
+  // 3. Move issue to in_review (valid waiting disposition)
+  console.log(`Moving task ${taskId} to in_review...`);
+  await request('PATCH', `/api/issues/${taskId}`, {
+    status: 'in_review',
+    comment: `Aguardando deliberação/resposta do Board: ${question}`
+  });
+
+  // 4. Wakeup the Board agent
+  const boardId = KNOWN_AGENTS['board'];
+  if (boardId) {
+    console.log(`Notifying Board agent (${boardId})...`);
+    try {
+      await request('POST', `/api/agents/${boardId}/wakeup`, {
+        reason: 'agent_question',
+        issueId: taskId
+      });
+      console.log('Board agent successfully notified.');
+    } catch (err) {
+      console.warn('Warning waking Board agent:', err.message);
+    }
+  }
+
+  console.log(`Success: Task ${taskId} is now in_review awaiting Board resolution.`);
+}
+
+async function handleReview(args) {
+  let taskId = null;
+  let commentParts = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--task-id' && args[i + 1]) {
+      taskId = args[++i];
+    } else {
+      commentParts.push(args[i]);
+    }
+  }
+  let comment = commentParts.join(' ').trim() || 'Task submitted for review.';
+  taskId = await findCurrentOrActiveTask(taskId);
+  if (!taskId) {
+    console.error('Error: No task ID specified and no active task found in environment.');
+    process.exit(1);
+  }
+  console.log(`Moving task ${taskId} to in_review...`);
+  const res = await request('PATCH', `/api/issues/${taskId}`, {
+    status: 'in_review',
+    comment: comment
+  });
+  console.log(`Success: Task ${res.identifier || taskId} is now in_review.`);
+}
+
+async function main() {
+  const command = process.argv[2];
+  const args = process.argv.slice(3);
+
+  if (!command || command === '--help' || command === '-h' || command === 'help') {
+    console.log(`Paperclip Helper CLI
+
+Usage:
+  paperclip-helper done [--task-id <id>] [comment]
+    Marks the current task as done.
+
+  paperclip-helper ask-board [--task-id <id>] --question "..."
+    Escalates an issue or asks a question to the Board, setting status to in_review.
+
+  paperclip-helper review [--task-id <id>] [comment]
+    Moves the task to in_review waiting for review.
+
+  paperclip-helper document [--task-id <id>] <key> <title> <filePath>
+    Uploads a markdown document to the task.
+
+  paperclip-helper artifact [--task-id <id>] <filePath> [title]
+    Uploads and registers an artifact file for the task.
+
+  paperclip-helper create-task --title "..." --assignee "<CEO|CTO|Frontend|Firmware|QA>" [--description "..."]
+    Creates a new child task assigned to the specified agent.
+
+  paperclip-helper comment [--task-id <id>] "..."
+    Posts a comment to the task.
+`);
+    return;
+  }
+
+  try {
+    switch (command) {
+      case 'done':
+        await handleDone(args);
+        break;
+      case 'ask-board':
+        await handleAskBoard(args);
+        break;
+      case 'review':
+        await handleReview(args);
+        break;
+      case 'document':
+        await handleDocument(args);
+        break;
+      case 'artifact':
+        await handleArtifact(args);
+        break;
+      case 'create-task':
+        await handleCreateTask(args);
+        break;
+      case 'comment':
+        await handleComment(args);
+        break;
+      default:
+        console.error(`Unknown command: ${command}. Use paperclip-helper --help for usage.`);
+        process.exit(1);
+    }
+  } catch (err) {
+    console.error(`Error executing ${command}:`, err.message);
+    process.exit(1);
+  }
+}
+
+main();

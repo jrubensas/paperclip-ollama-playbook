@@ -17,6 +17,8 @@ A execução de múltiplos agentes de inteligência artificial de forma autônom
    O runtime do OpenCode sofria desvios de diretório de trabalho devido à persistência de sessões no SQLite (`~/.local/share/opencode/opencode.db`), gerando arquivos fora do workspace do projeto.
 4. **Governança Econômica (Board de Diretores)**:
    Adoção de uma arquitetura híbrida onde 99% do trabalho computacional pesado roda local e gratuito, enquanto aprovações corporativas críticas utilizam um modelo econômico em nuvem sob demanda com **custo zero em repouso ($0 idle)**.
+5. **Triagem Autônoma e Circuito de Autorrecuperação (Self-Healing Loop)**:
+   Resolução de bloqueios sistemáticos por falta de disposição (`successful_run_missing_state`). Um daemon contínuo vigia tarefas em `blocked` e aciona o Agente Board (Claude Haiku) para esclarecer dúvidas técnicas/mocks e reencaminhar as tarefas aos executores locais automaticamente.
 
 ---
 
@@ -75,6 +77,7 @@ A execução de múltiplos agentes de inteligência artificial de forma autônom
 | **05** | [`05_opencode_adapter_fixes.md`](docs/05_opencode_adapter_fixes.md) | Resolução de vazamento de diretório no OpenCode SQLite e patch do `--dir` no `@paperclipai/adapter-opencode-local`. |
 | **06** | [`06_board_governance_claude.md`](docs/06_board_governance_claude.md) | Implementação do Board com Claude Haiku: deliberações formais, teto de turnos (`maxTurns=12`) e $0 em repouso. |
 | **07** | [`07_troubleshooting_playbook.md`](docs/07_troubleshooting_playbook.md) | Guia prático de resolução de problemas, comandos de diagnóstico e desbloqueio de tarefas. |
+| **08** | [`08_board_triage_self_healing.md`](docs/08_board_triage_self_healing.md) | Circuito fechado de autorrecuperação: triagem autônoma de tarefas bloqueadas com o Agente Board. |
 
 ---
 
@@ -84,14 +87,18 @@ Os scripts desenvolvidos estão armazenados no diretório [`scripts/`](scripts/)
 
 1. **[`scripts/ollama-router.js`](scripts/ollama-router.js)**:
    Proxy reverso Node.js com captura ativa de ferramentas, sanitização de caminhos e emulação de chunks de streaming OpenAI.
-2. **[`scripts/paperclip-helper.js`](scripts/paperclip-helper.js)**:
+2. **[`scripts/paperclip-helper`](scripts/paperclip-helper)**:
    CLI criada para que os agentes autônomos consigam:
    - Marcar tarefas como concluídas (`paperclip-helper done [comentário]`).
+   - Consultar ou escalar dúvidas ao Board (`paperclip-helper ask-board --question "..."`).
+   - Mover tarefa para revisão (`paperclip-helper review [comentário]`).
    - Publicar documentos markdown vinculados à tarefa (`paperclip-helper document <key> <title> <file>`).
    - Fazer upload e registrar artefatos na UI (`paperclip-helper artifact <file> [title]`).
    - Criar novas sub-tarefas com vínculo automático a projetos e metas (`paperclip-helper create-task ...`).
    - Postar comentários estruturados (`paperclip-helper comment "..."`).
-3. **[`scripts/ollama-preload.sh`](scripts/ollama-preload.sh)**:
+3. **[`scripts/board_triage_watcher.py`](scripts/board_triage_watcher.py)**:
+   Daemon de vigília contínua que detecta tarefas bloqueadas (`status: blocked`) e dispara a triagem e autorrecuperação pelo Agente Board (Claude 3.5 Haiku).
+4. **[`scripts/ollama-preload.sh`](scripts/ollama-preload.sh)**:
    Garante 100% de ocupação dos pesos na VRAM antes do primeiro heartbeat do Paperclip.
 
 ---
@@ -104,6 +111,7 @@ Os arquivos de configuração para persistência no Linux estão disponíveis em
 - **[`systemd/ollama-router.service`](systemd/ollama-router.service)**: Serviço do proxy roteador escutando na porta padrão `11434`.
 - **[`systemd/ollama-preload.service`](systemd/ollama-preload.service)**: Serviço de carga imediata pós-boot.
 - **[`systemd/paperclipai.service`](systemd/paperclipai.service)**: Serviço do servidor Paperclip AI integrado ao catálogo de modelos locais.
+- **[`systemd/paperclip-board-triage.service`](systemd/paperclip-board-triage.service)**: Serviço de monitoramento e triagem contínua de tarefas bloqueadas pelo Board.
 
 ---
 
